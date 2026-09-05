@@ -2,6 +2,21 @@
 
 from typing import Iterable, Iterator, List, Optional, Tuple
 
+from .parser import _TOKEN_CHARS
+
+
+def _check_name(name: str) -> None:
+    if not name or any(ch not in _TOKEN_CHARS for ch in name):
+        raise ValueError(f"invalid header name for encoding: {name!r}")
+
+
+def _check_value(value: str) -> None:
+    # A bare CR or LF in a value is exactly how header injection attacks
+    # smuggle an extra header or split the response into two; refuse to
+    # encode it rather than emit something a receiver could misparse.
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"header value contains a line terminator: {value!r}")
+
 
 class Headers:
     """Case-insensitive collection of header (name, value) pairs.
@@ -43,3 +58,21 @@ class Headers:
 
     def __repr__(self) -> str:
         return f"Headers({self._items!r})"
+
+    def iter_encode(self) -> Iterator[bytes]:
+        """Serialize back to the wire format ``iter_headers`` parses.
+
+        Yields one CRLF-terminated line per header, in insertion order,
+        followed by the blank line that terminates a header block - so
+        the concatenation of everything this yields is a complete,
+        parseable header block on its own.
+        """
+        for name, value in self._items:
+            _check_name(name)
+            _check_value(value)
+            yield f"{name}: {value}\r\n".encode("latin-1")
+        yield b"\r\n"
+
+    def to_bytes(self) -> bytes:
+        """Serialize the whole collection, including the closing blank line."""
+        return b"".join(self.iter_encode())

@@ -64,6 +64,21 @@ complete, rather than waiting for the whole block, so a caller can act
 on early headers (reject on `Content-Length` before the rest of the
 request even arrives, say) without waiting for the parse to finish.
 
+Going the other way, `Headers.to_bytes()` serializes a collection back
+into a header block, including the terminating blank line:
+
+```python
+headers = Headers([("Content-Type", "text/plain"), ("X-Request-Id", "abc123")])
+sock.sendall(headers.to_bytes())
+```
+
+`Headers.iter_encode()` gives you the same thing one line at a time,
+if you'd rather write each line to a socket as it's produced instead
+of building the whole block in memory first. Both raise `ValueError`
+if a name or value can't be represented safely - a value containing a
+bare CR or LF, for instance, which is how header injection attacks
+smuggle an extra header or split the response.
+
 ## behavior worth knowing about
 
 - Header field values are decoded as `latin-1`, not `utf-8` - that's
@@ -82,9 +97,9 @@ request even arrives, say) without waiting for the parse to finish.
 
 ## status
 
-Early skeleton. The parser and the `Headers` collection work and are
-covered by the usage above, but there's no serialization side yet -
-see the roadmap in the repo for what's next.
+Early skeleton. Parsing, encoding, and the `Headers` collection work
+and are covered by the usage above, but there's no test suite yet and
+no support for trailer headers after chunked transfer-encoding.
 
 ## license
 
