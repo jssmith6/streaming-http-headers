@@ -98,8 +98,11 @@ smuggle an extra header or split the response.
 ## status
 
 Early skeleton. Parsing, encoding, and the `Headers` collection work
-and are covered by the usage above, but there's no test suite yet and
-no support for trailer headers after chunked transfer-encoding.
+and are covered by the usage above and by the tests in `tests/`, but
+there's no support yet for trailer headers after chunked
+transfer-encoding.
+
+Run the tests with `python -m unittest discover tests`.
 
 ## license
 
