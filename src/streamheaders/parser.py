@@ -27,6 +27,14 @@ class MalformedHeaderLine(HeaderError):
     """A line did not look like a valid HTTP header field."""
 
 
+class MalformedChunkedBody(HeaderError):
+    """A chunked-transfer-encoding body did not follow RFC 7230 4.1 framing."""
+
+
+class ChunkTooLarge(HeaderError):
+    """A chunk-size line declared more data than max_chunk_size allows."""
+
+
 # RFC 7230 section 3.2.6 token characters, i.e. what's legal in a header
 # field name. Rejecting anything outside this set up front avoids having
 # to reason about weird bytes later on.
@@ -84,6 +92,27 @@ class LineReader:
                 self._exhausted = True
                 continue
             self._buffer.extend(chunk)
+
+    def read_exact(self, size: int) -> bytes:
+        """Read exactly ``size`` raw bytes, bypassing line splitting.
+
+        Used for chunk payloads in chunked transfer-encoding, where the
+        data is arbitrary bytes and may itself contain newlines.
+        """
+        while len(self._buffer) < size:
+            if self._exhausted:
+                raise HeaderError(
+                    "stream ended before expected chunk data was fully read"
+                )
+            try:
+                chunk = next(self._chunks)
+            except StopIteration:
+                self._exhausted = True
+                continue
+            self._buffer.extend(chunk)
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
 
 
 def _validate_name(raw: bytes) -> str:
@@ -146,6 +175,15 @@ def _raw_pairs(
     raise HeaderError("stream ended before the header block was terminated")
 
 
+def _limited_pairs(
+    reader: LineReader, allow_obsolete_folding: bool, max_headers: int
+) -> Iterator[Tuple[str, str]]:
+    for count, pair in enumerate(_raw_pairs(reader, allow_obsolete_folding), start=1):
+        if count > max_headers:
+            raise TooManyHeaders(f"more than {max_headers} headers in block")
+        yield pair
+
+
 def iter_headers(
     chunks: Iterable[bytes],
     *,
@@ -165,8 +203,91 @@ def iter_headers(
     on Content-Length) before the rest of the block has even arrived.
     """
     reader = LineReader(chunks, max_line_size=max_line_size)
-    pairs = _raw_pairs(reader, allow_obsolete_folding)
-    for count, pair in enumerate(pairs, start=1):
-        if count > max_headers:
-            raise TooManyHeaders(f"more than {max_headers} headers in block")
-        yield pair
+    yield from _limited_pairs(reader, allow_obsolete_folding, max_headers)
+
+
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _parse_chunk_size(line: bytes) -> int:
+    # A chunk-size line may carry chunk-extensions after a ';' (RFC 7230
+    # 4.1.1); nothing in this library needs them, so they're discarded.
+    field = line.split(b";", 1)[0].strip()
+    if not field or any(chr(b) not in _HEX_DIGITS for b in field):
+        raise MalformedChunkedBody(f"invalid chunk size line {line!r}")
+    return int(field, 16)
+
+
+class ChunkedBodyReader:
+    """Decodes an HTTP chunked-transfer-encoding body (RFC 7230 4.1).
+
+    Iterate over an instance to get the decoded body as it arrives, one
+    chunk's worth of bytes at a time. Once iteration ends, ``trailers``
+    holds any trailer header fields sent after the terminating
+    zero-length chunk, as (name, value) pairs - empty if none were
+    sent, since a trailer section is optional even for a chunked body.
+
+    Like the rest of this library, memory use is bounded: at most one
+    chunk's data (up to max_chunk_size) and one line are held at once.
+    """
+
+    def __init__(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        max_line_size: int = 8192,
+        max_chunk_size: int = 1024 * 1024,
+        max_headers: int = 100,
+        allow_obsolete_folding: bool = False,
+    ):
+        self._reader = LineReader(chunks, max_line_size=max_line_size)
+        self._max_chunk_size = max_chunk_size
+        self._max_headers = max_headers
+        self._allow_obsolete_folding = allow_obsolete_folding
+        self._done = False
+        self.trailers: List[Tuple[str, str]] = []
+
+    def __iter__(self) -> "ChunkedBodyReader":
+        return self
+
+    def __next__(self) -> bytes:
+        if self._done:
+            raise StopIteration
+
+        try:
+            size_line = next(self._reader)
+        except StopIteration:
+            # A bare StopIteration here would look like a well-formed,
+            # merely short body instead of a stream that broke off mid
+            # chunk; raise so truncation can't pass for a valid ending.
+            raise HeaderError(
+                "stream ended before a chunk-size line was found"
+            ) from None
+        size = _parse_chunk_size(size_line)
+        if size > self._max_chunk_size:
+            raise ChunkTooLarge(
+                f"chunk of {size} bytes exceeds max_chunk_size "
+                f"{self._max_chunk_size}"
+            )
+
+        if size == 0:
+            self._done = True
+            self.trailers = list(
+                _limited_pairs(
+                    self._reader, self._allow_obsolete_folding, self._max_headers
+                )
+            )
+            raise StopIteration
+
+        data = self._reader.read_exact(size)
+        try:
+            trailer = next(self._reader)
+        except StopIteration:
+            raise HeaderError(
+                "stream ended before the terminator after chunk data"
+            ) from None
+        if trailer:
+            raise MalformedChunkedBody(
+                f"chunk data not followed by a bare line terminator, got {trailer!r}"
+            )
+        return data

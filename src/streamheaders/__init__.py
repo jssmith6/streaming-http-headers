@@ -1,7 +1,10 @@
 from .collection import Headers
 from .parser import (
+    ChunkedBodyReader,
+    ChunkTooLarge,
     HeaderError,
     HeaderLineTooLong,
+    MalformedChunkedBody,
     MalformedHeaderLine,
     TooManyHeaders,
     iter_headers,
@@ -9,8 +12,11 @@ from .parser import (
 
 __all__ = [
     "Headers",
+    "ChunkedBodyReader",
+    "ChunkTooLarge",
     "HeaderError",
     "HeaderLineTooLong",
+    "MalformedChunkedBody",
     "MalformedHeaderLine",
     "TooManyHeaders",
     "iter_headers",

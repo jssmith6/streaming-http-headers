@@ -79,6 +79,24 @@ if a name or value can't be represented safely - a value containing a
 bare CR or LF, for instance, which is how header injection attacks
 smuggle an extra header or split the response.
 
+If a response has `Transfer-Encoding: chunked`, `ChunkedBodyReader`
+decodes the body off the same kind of chunk iterable, one chunk at a
+time, and picks up any trailer fields sent after the terminating
+zero-length chunk:
+
+```python
+from streamheaders import ChunkedBodyReader
+
+body = ChunkedBodyReader(recv_chunks(sock))
+for data in body:
+    handle(data)
+print(body.trailers)  # [] if the sender didn't send any
+```
+
+`recv_chunks` here is the same generator used for `iter_headers` above
+- read the header block first, check for `Transfer-Encoding: chunked`,
+then hand the same (still-live) iterator to `ChunkedBodyReader`.
+
 ## behavior worth knowing about
 
 - Header field values are decoded as `latin-1`, not `utf-8` - that's
@@ -93,14 +111,16 @@ smuggle an extra header or split the response.
   for the same reason.
 - `max_line_size` and `max_headers` are enforced so a stream that never
   sends a line terminator, or that sends thousands of tiny headers,
-  can't be used to force unbounded memory or CPU use.
+  can't be used to force unbounded memory or CPU use. `ChunkedBodyReader`
+  adds `max_chunk_size` for the same reason - otherwise a single
+  chunk-size line could claim gigabytes and force it all into memory
+  before handing any of it back.
 
 ## status
 
-Early skeleton. Parsing, encoding, and the `Headers` collection work
-and are covered by the usage above and by the tests in `tests/`, but
-there's no support yet for trailer headers after chunked
-transfer-encoding.
+Early skeleton. Parsing, encoding, the `Headers` collection, and
+chunked-body/trailer decoding work and are covered by the usage above
+and by the tests in `tests/`.
 
 Run the tests with `python -m unittest discover tests`.
 
