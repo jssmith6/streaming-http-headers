@@ -1,6 +1,6 @@
 """A small case-insensitive, order-preserving header collection."""
 
-from typing import Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .parser import _TOKEN_CHARS
 
@@ -29,26 +29,30 @@ class Headers:
 
     def __init__(self, pairs: Iterable[Tuple[str, str]] = ()):
         self._items: List[Tuple[str, str]] = []
+        # Maps lowercase name -> indices into _items, in insertion order,
+        # so repeated names (e.g. Set-Cookie) don't cost a linear scan.
+        self._index: Dict[str, List[int]] = {}
         for name, value in pairs:
             self.add(name, value)
 
     def add(self, name: str, value: str) -> None:
+        self._index.setdefault(name.lower(), []).append(len(self._items))
         self._items.append((name, value))
 
     def get(self, name: str, default: Optional[str] = None) -> Optional[str]:
-        key = name.lower()
-        for item_name, item_value in self._items:
-            if item_name.lower() == key:
-                return item_value
-        return default
+        indices = self._index.get(name.lower())
+        if not indices:
+            return default
+        return self._items[indices[0]][1]
 
     def get_all(self, name: str) -> List[str]:
-        key = name.lower()
-        return [value for item_name, value in self._items if item_name.lower() == key]
+        indices = self._index.get(name.lower())
+        if not indices:
+            return []
+        return [self._items[i][1] for i in indices]
 
     def __contains__(self, name: str) -> bool:
-        key = name.lower()
-        return any(item_name.lower() == key for item_name, _ in self._items)
+        return name.lower() in self._index
 
     def __iter__(self) -> Iterator[Tuple[str, str]]:
         return iter(self._items)
